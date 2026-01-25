@@ -155,12 +155,9 @@ class PrinterClient:
 
     def _encode_image(self, image: Image, vertical_offset=0, horizontal_offset=0):
         # Convert the image to monochrome
-        # For B1/B18/B21: non-white pixels (< 128) become 1 (print), white becomes 0 (no print)
-        # For D11/D110: inverted encoding
-        if self.model in ('b1', 'b18', 'b21'):
-            img = image.convert("L").convert("1")
-        else:
-            img = ImageOps.invert(image.convert("L")).convert("1")
+        # Invert so that black pixels in original become 1s (print marks)
+        # White background becomes 0s (no print)
+        img = ImageOps.invert(image.convert("L")).convert("1")
 
         # Apply horizontal offset
         if horizontal_offset > 0:
