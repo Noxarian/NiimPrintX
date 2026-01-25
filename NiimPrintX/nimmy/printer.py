@@ -43,9 +43,10 @@ class RequestCodeEnum(enum.IntEnum):
 
 
 class PrinterClient:
-    def __init__(self, device):
+    def __init__(self, device, model='d110'):
         self.char_uuid = None
         self.device = device
+        self.model = model.lower()
         self.transport = BLETransport()
         self.notification_event = asyncio.Event()
         self.notification_data = None
@@ -129,10 +130,11 @@ class PrinterClient:
                           horizontal_offset = 0):
         await self.set_label_density(density)
         await self.set_label_type(1)
-        await self.start_print()
+        await self.start_print(total_pages=quantity)
         await self.start_page_print()
-        await self.set_dimension(image.height, image.width)
-        await self.set_quantity(quantity)
+        await self.set_dimension(image.height, image.width, quantity)
+        if self.model not in ('b1', 'b18', 'b21'):
+            await self.set_quantity(quantity)
 
         for pkt in self._encode_image(image, vertical_offset, horizontal_offset):
             # Send each line and wait for a response or status check
@@ -153,7 +155,12 @@ class PrinterClient:
 
     def _encode_image(self, image: Image, vertical_offset=0, horizontal_offset=0):
         # Convert the image to monochrome
-        img = ImageOps.invert(image.convert("L")).convert("1")
+        # For B1/B18/B21: non-white pixels (< 128) become 1 (print), white becomes 0 (no print)
+        # For D11/D110: inverted encoding
+        if self.model in ('b1', 'b18', 'b21'):
+            img = image.convert("L").convert("1")
+        else:
+            img = ImageOps.invert(image.convert("L")).convert("1")
 
         # Apply horizontal offset
         if horizontal_offset > 0:
@@ -262,8 +269,13 @@ class PrinterClient:
         packet = await self.send_command(RequestCodeEnum.SET_LABEL_DENSITY, bytes((n,)))
         return bool(packet.data[0])
 
-    async def start_print(self):
-        packet = await self.send_command(RequestCodeEnum.START_PRINT, b"\x01")
+    async def start_print(self, total_pages=1, page_color=0):
+        if self.model in ('b1', 'b18', 'b21'):
+            # B1-specific: 7 bytes - totalPages(2) + zeros(4) + pageColor(1)
+            data = struct.pack('>H', total_pages) + bytes([0, 0, 0, 0, page_color])
+        else:
+            data = b"\x01"
+        packet = await self.send_command(RequestCodeEnum.START_PRINT, data)
         return bool(packet.data[0])
 
     async def end_print(self):
@@ -282,19 +294,29 @@ class PrinterClient:
         packet = await self.send_command(RequestCodeEnum.ALLOW_PRINT_CLEAR, b"\x01")
         return bool(packet.data[0])
 
-    async def set_dimension(self, w, h):
-        packet = await self.send_command(
-            RequestCodeEnum.SET_DIMENSION, struct.pack(">HH", w, h)
-        )
+    async def set_dimension(self, rows, cols, quantity=1):
+        if self.model in ('b1', 'b18', 'b21'):
+            # B1-specific: 6 bytes - rows(2) + cols(2) + copies(2)
+            data = struct.pack('>HHH', rows, cols, quantity)
+        else:
+            data = struct.pack(">HH", rows, cols)
+        packet = await self.send_command(RequestCodeEnum.SET_DIMENSION, data)
         return bool(packet.data[0])
 
     async def set_quantity(self, n):
+        # For B1, quantity is set in set_dimension, but we keep this for compatibility
+        if self.model in ('b1', 'b18', 'b21'):
+            return True  # Already handled in set_dimension
         packet = await self.send_command(RequestCodeEnum.SET_QUANTITY, struct.pack(">H", n))
         return bool(packet.data[0])
 
     async def get_print_status(self):
         packet = await self.send_command(RequestCodeEnum.GET_PRINT_STATUS, b"\x01")
-        page, progress1, progress2 = struct.unpack(">HBB", packet.data)
+        if len(packet.data) >= 10:
+            # B1 returns 10 bytes
+            page, progress1, progress2 = struct.unpack(">HBB", packet.data[:4])
+        else:
+            page, progress1, progress2 = struct.unpack(">HBB", packet.data)
         return {"page": page, "progress1": progress1, "progress2": progress2}
 
     def __del__(self):
