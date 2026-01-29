@@ -79,8 +79,8 @@ class TabbedIconGrid(tk.Frame):
         # v_scrollbar.grid(row=0, column=1, sticky="ns")  # Attach the vertical scrollbar
         # h_scrollbar.grid(row=1, column=0, sticky="ew")
 
-        # Asynchronous loading of icons
-        threading.Thread(target=self.load_icons, args=(scrollable_frame, folder, subfolder_name)).start()
+        # Load icons synchronously in main thread to avoid tkinter threading issues
+        self.load_icons(scrollable_frame, folder, subfolder_name)
         canvas.after(200, lambda: canvas.configure(scrollregion=canvas.bbox("all")))
 
         # parent.grid_rowconfigure(0, weight=1)  # Allow the first row to expand
@@ -89,15 +89,29 @@ class TabbedIconGrid(tk.Frame):
         return canvas
 
     def load_icons(self, frame, folder, subfolder_name):
-        """Load icons asynchronously."""
+        """Load icons in the main thread."""
         icon_folder = f"{folder}/50x50"
-        icons = []
+        image_data = []
+        
+        # Load image files
         for filename in os.listdir(icon_folder):
             if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
                 image_path = os.path.join(icon_folder, filename)
+                image_data.append((filename, image_path, subfolder_name))
+        
+        # Create icons in main thread
+        self._create_icon_grid(frame, image_data)
+    
+    def _create_icon_grid(self, frame, image_data):
+        """Create the icon grid in the main thread."""
+        icons = []
+        for filename, image_path, subfolder_name in image_data:
+            try:
                 photo = ImageTk.PhotoImage(Image.open(image_path))
                 icons.append((filename, photo, subfolder_name))
-
+            except Exception as e:
+                print(f"Error loading {image_path}: {e}")
+        
         # Create the grid with the loaded icons
         grid_rows = math.ceil(len(icons) / self.columns)
         for row in range(grid_rows):
@@ -113,6 +127,7 @@ class TabbedIconGrid(tk.Frame):
                         relief=tk.RAISED,
                         bg="white"
                     )
+                    icon_label.image = photo  # Keep a reference to prevent garbage collection
                     icon_label.grid(row=row, column=col, padx=5, pady=5)
                     icon_label.bind("<Button-1>", lambda event, idx=index: self.on_icon_click(idx, icons))
 
